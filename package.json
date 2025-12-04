@@ -1,0 +1,156 @@
+{
+  "name": "rnpathfinders-backend",
+  "version": "1.0.0",
+  "description": "RNPathfinders Backend API",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "mysql2": "^3.6.5",
+    "bcryptjs": "^2.4.3",
+    "jsonwebtoken": "^9.0.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}
+```
+
+**File 3: `.gitignore`**
+```
+node_modules/
+.env
+.DS_Store
+```
+
+---
+
+### **Step 2: Upload Files to GitHub**
+
+1. **Go to your repository:** `https://github.com/yourusername/psychic-guide`
+
+2. **Click "Add file"** → **"Upload files"**
+
+3. **Drag and drop** or upload:
+   - `server.js`
+   - `package.json`
+   - `.gitignore`
+
+4. **Click "Commit changes"**
+
+---
+
+### **PHASE 2: Deploy to Render**
+
+#### **Step 3: Connect Render to GitHub**
+
+1. **Go to [render.com](https://render.com/dashboard)**
+
+2. **Click "New +"** → **"Web Service"**
+
+3. **Click "Connect GitHub"**
+
+4. **Authorize Render** to access your GitHub
+
+5. **Select your repository:** `psychic-guide`
+
+6. **Click "Connect"**
+
+---
+
+#### **Step 4: Configure Render Settings**
+
+Render will show you a configuration page:
+
+**Fill in:**
+```
+Name: rnpathfinders
+Region: Choose closest to Nigeria (probably Frankfurt or Singapore)
+Branch: main
+Root Directory: (leave blank)
+Runtime: Node
+Build Command: npm install
+Start Command: node server.js
+```
+
+**Choose Plan:**
+- Select **"Free"** plan
+
+**Click "Create Web Service"**
+
+---
+
+#### **Step 5: Add Environment Variables**
+
+While it's building, scroll down to **"Environment Variables"** section:
+
+**Click "Add Environment Variable"** and add these ONE BY ONE:
+```
+Key: DB_HOST
+Value: [Your Afeeshost database host - find in cPanel]
+
+Key: DB_USER
+Value: rnpathfi_[your_db_username]
+
+Key: DB_PASSWORD
+Value: [your_database_password]
+
+Key: DB_NAME
+Value: rnpathfi_rnpathfinders
+
+Key: JWT_SECRET
+Value: RnP4thF1nd3rsS3cr3tK3y2024V3ryL0ngR4nd0mStr1ng
+
+Key: PORT
+Value: 5000
+
+Key: FRONTEND_URL
+Value: https://rnpathfinders.ng
+```
+
+**Click "Save Changes"**
+
+---
+
+#### **Step 6: Wait for Deployment**
+
+Render will:
+- ✅ Clone your GitHub repo
+- ✅ Run `npm install`
+- ✅ Start your server
+- ✅ Give you a URL (like `https://rnpathfinders.onrender.com`)
+
+**This takes 3-5 minutes**
+
+---
+
+### **PHASE 3: Configure Database Access**
+
+#### **Step 7: Allow Remote Database Connections**
+
+Your Render backend needs to connect to your Afeeshost database:
+
+1. **Go to Afeeshost cPanel**
+
+2. **Find "Remote MySQL"**
+
+3. **Add Access Host:** `%` (allows all connections)
+   - Or find Render's IP addresses if you want to be specific
+
+4. **Click "Add Host"**
+
+---
+
+### **PHASE 4: Test Backend**
+
+#### **Step 8: Test Your Backend**
+
+1. **Copy your Render URL** (like `https://rnpathfinders.onrender.com`)
+
+2. **Open browser and visit:**
+```
+   https://YOUR-RENDER-URL.onrender.com/api/health
