@@ -1,156 +1,334 @@
-{
-  "name": "rnpathfinders-backend",
-  "version": "1.0.0",
-  "description": "RNPathfinders Backend API",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js"
-  },
-  "dependencies": {
-    "express": "^4.18.2",
-    "mysql2": "^3.6.5",
-    "bcryptjs": "^2.4.3",
-    "jsonwebtoken": "^9.0.2",
-    "cors": "^2.8.5",
-    "dotenv": "^16.3.1"
-  },
-  "engines": {
-    "node": ">=14.0.0"
+const express = require('express');
+const mysql = require('mysql2/promise');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const cors = require('cors');
+require('dotenv').config();
+
+const app = express();
+
+// Middleware
+app.use(express.json());
+app.use(cors({
+  origin: process.env.FRONTEND_URL || 'https://rnpathfinders.ng',
+  credentials: true
+}));
+
+// Database connection pool
+const pool = mysql.createPool({
+  host: process.env.DB_HOST,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME,
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0
+});
+
+// Health check endpoint
+app.get('/api/health', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    message: 'RNPathfinders API is running',
+    domain: 'rnpathfinders.ng'
+  });
+});
+
+// Test database connection
+app.get('/api/test-db', async (req, res) => {
+  try {
+    const connection = await pool.getConnection();
+    await connection.ping();
+    connection.release();
+    res.json({ status: 'ok', message: 'Database connected successfully' });
+  } catch (error) {
+    res.status(500).json({ error: 'Database connection failed', details: error.message });
   }
-}
-```
+});
 
-**File 3: `.gitignore`**
-```
-node_modules/
-.env
-.DS_Store
-```
+// Register endpoint
+app.post('/api/auth/register', async (req, res) => {
+  try {
+    const { email, password, accessCode } = req.body;
 
----
+    // Validate input
+    if (!email || !password || !accessCode) {
+      return res.status(400).json({ error: 'All fields are required' });
+    }
 
-### **Step 2: Upload Files to GitHub**
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({ error: 'Invalid email format' });
+    }
 
-1. **Go to your repository:** `https://github.com/yourusername/psychic-guide`
+    // Validate password length
+    if (password.length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters' });
+    }
 
-2. **Click "Add file"** → **"Upload files"**
+    // Check if access code is valid
+    const [codes] = await pool.execute(
+      'SELECT * FROM access_codes WHERE code = ? AND used = FALSE',
+      [accessCode]
+    );
 
-3. **Drag and drop** or upload:
-   - `server.js`
-   - `package.json`
-   - `.gitignore`
+    if (codes.length === 0) {
+      return res.status(400).json({ error: 'Invalid or already used access code' });
+    }
 
-4. **Click "Commit changes"**
+    // Check if email already exists
+    const [existingUsers] = await pool.execute(
+      'SELECT id FROM users WHERE email = ?',
+      [email]
+    );
 
----
+    if (existingUsers.length > 0) {
+      return res.status(400).json({ error: 'Email already registered' });
+    }
 
-### **PHASE 2: Deploy to Render**
+    // Hash password
+    const hashedPassword = await bcrypt.hash(password, 10);
 
-#### **Step 3: Connect Render to GitHub**
+    // Check if this is the first user (make them admin)
+    const [userCount] = await pool.execute('SELECT COUNT(*) as count FROM users');
+    const isAdmin = userCount[0].count === 0;
 
-1. **Go to [render.com](https://render.com/dashboard)**
+    // Create user
+    const [result] = await pool.execute(
+      'INSERT INTO users (email, password, is_admin, created_at) VALUES (?, ?, ?, NOW())',
+      [email, hashedPassword, isAdmin]
+    );
 
-2. **Click "New +"** → **"Web Service"**
+    const userId = result.insertId;
 
-3. **Click "Connect GitHub"**
+    // Mark access code as used
+    await pool.execute(
+      'UPDATE access_codes SET used = TRUE, used_by = ?, used_at = NOW() WHERE code = ?',
+      [userId, accessCode]
+    );
 
-4. **Authorize Render** to access your GitHub
+    // Generate JWT token
+    const token = jwt.sign(
+      { userId, email, isAdmin },
+      process.env.JWT_SECRET || 'your-secret-key-change-this',
+      { expiresIn: '7d' }
+    );
 
-5. **Select your repository:** `psychic-guide`
+    res.json({
+      message: 'Registration successful',
+      token,
+      user: { id: userId, email, isAdmin }
+    });
 
-6. **Click "Connect"**
+  } catch (error) {
+    console.error('Registration error:', error);
+    res.status(500).json({ error: 'Registration failed', details: error.message });
+  }
+});
 
----
+// Login endpoint
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
 
-#### **Step 4: Configure Render Settings**
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password are required' });
+    }
 
-Render will show you a configuration page:
+    // Find user
+    const [users] = await pool.execute(
+      'SELECT * FROM users WHERE email = ?',
+      [email]
+    );
 
-**Fill in:**
-```
-Name: rnpathfinders
-Region: Choose closest to Nigeria (probably Frankfurt or Singapore)
-Branch: main
-Root Directory: (leave blank)
-Runtime: Node
-Build Command: npm install
-Start Command: node server.js
-```
+    if (users.length === 0) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
 
-**Choose Plan:**
-- Select **"Free"** plan
+    const user = users[0];
 
-**Click "Create Web Service"**
+    // Verify password
+    const validPassword = await bcrypt.compare(password, user.password);
+    if (!validPassword) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
 
----
+    // Generate JWT token
+    const token = jwt.sign(
+      { userId: user.id, email: user.email, isAdmin: user.is_admin },
+      process.env.JWT_SECRET || 'your-secret-key-change-this',
+      { expiresIn: '7d' }
+    );
 
-#### **Step 5: Add Environment Variables**
+    res.json({
+      message: 'Login successful',
+      token,
+      user: { id: user.id, email: user.email, isAdmin: user.is_admin }
+    });
 
-While it's building, scroll down to **"Environment Variables"** section:
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({ error: 'Login failed', details: error.message });
+  }
+});
 
-**Click "Add Environment Variable"** and add these ONE BY ONE:
-```
-Key: DB_HOST
-Value: [Your Afeeshost database host - find in cPanel]
+// Middleware to verify JWT token
+const verifyToken = (req, res, next) => {
+  const token = req.headers.authorization?.split(' ')[1];
 
-Key: DB_USER
-Value: rnpathfi_[your_db_username]
+  if (!token) {
+    return res.status(401).json({ error: 'No token provided' });
+  }
 
-Key: DB_PASSWORD
-Value: [your_database_password]
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key-change-this');
+    req.user = decoded;
+    next();
+  } catch (error) {
+    return res.status(401).json({ error: 'Invalid token' });
+  }
+};
 
-Key: DB_NAME
-Value: rnpathfi_rnpathfinders
+// Get current user info
+app.get('/api/auth/me', verifyToken, async (req, res) => {
+  try {
+    const [users] = await pool.execute(
+      'SELECT id, email, is_admin, created_at FROM users WHERE id = ?',
+      [req.user.userId]
+    );
 
-Key: JWT_SECRET
-Value: RnP4thF1nd3rsS3cr3tK3y2024V3ryL0ngR4nd0mStr1ng
+    if (users.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
 
-Key: PORT
-Value: 5000
+    res.json({ user: users[0] });
+  } catch (error) {
+    console.error('Get user error:', error);
+    res.status(500).json({ error: 'Failed to get user info' });
+  }
+});
 
-Key: FRONTEND_URL
-Value: https://rnpathfinders.ng
-```
+// Admin: Generate access codes
+app.post('/api/admin/codes', verifyToken, async (req, res) => {
+  try {
+    if (!req.user.isAdmin) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
 
-**Click "Save Changes"**
+    const { count = 1, prefix = 'OP' } = req.body;
 
----
+    const codes = [];
+    for (let i = 0; i < count; i++) {
+      const randomCode = `${prefix}-${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
+      await pool.execute(
+        'INSERT INTO access_codes (code, created_at) VALUES (?, NOW())',
+        [randomCode]
+      );
+      codes.push(randomCode);
+    }
 
-#### **Step 6: Wait for Deployment**
+    res.json({ message: `${count} codes generated`, codes });
+  } catch (error) {
+    console.error('Code generation error:', error);
+    res.status(500).json({ error: 'Failed to generate codes' });
+  }
+});
 
-Render will:
-- ✅ Clone your GitHub repo
-- ✅ Run `npm install`
-- ✅ Start your server
-- ✅ Give you a URL (like `https://rnpathfinders.onrender.com`)
+// Admin: Get all users
+app.get('/api/admin/users', verifyToken, async (req, res) => {
+  try {
+    if (!req.user.isAdmin) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
 
-**This takes 3-5 minutes**
+    const [users] = await pool.execute(
+      'SELECT id, email, is_admin, created_at FROM users ORDER BY created_at DESC'
+    );
 
----
+    res.json({ users });
+  } catch (error) {
+    console.error('Get users error:', error);
+    res.status(500).json({ error: 'Failed to get users' });
+  }
+});
 
-### **PHASE 3: Configure Database Access**
+// Admin: Get all access codes
+app.get('/api/admin/codes', verifyToken, async (req, res) => {
+  try {
+    if (!req.user.isAdmin) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
 
-#### **Step 7: Allow Remote Database Connections**
+    const [codes] = await pool.execute(
+      'SELECT ac.*, u.email as used_by_email FROM access_codes ac LEFT JOIN users u ON ac.used_by = u.id ORDER BY ac.created_at DESC'
+    );
 
-Your Render backend needs to connect to your Afeeshost database:
+    res.json({ codes });
+  } catch (error) {
+    console.error('Get codes error:', error);
+    res.status(500).json({ error: 'Failed to get codes' });
+  }
+});
 
-1. **Go to Afeeshost cPanel**
+// Get all resources
+app.get('/api/resources', verifyToken, async (req, res) => {
+  try {
+    const [resources] = await pool.execute(
+      'SELECT * FROM resources ORDER BY created_at DESC'
+    );
 
-2. **Find "Remote MySQL"**
+    res.json({ resources });
+  } catch (error) {
+    console.error('Get resources error:', error);
+    res.status(500).json({ error: 'Failed to get resources' });
+  }
+});
 
-3. **Add Access Host:** `%` (allows all connections)
-   - Or find Render's IP addresses if you want to be specific
+// Admin: Add resource
+app.post('/api/admin/resources', verifyToken, async (req, res) => {
+  try {
+    if (!req.user.isAdmin) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
 
-4. **Click "Add Host"**
+    const { title, url, category, type } = req.body;
 
----
+    if (!title || !url || !category || !type) {
+      return res.status(400).json({ error: 'All fields are required' });
+    }
 
-### **PHASE 4: Test Backend**
+    await pool.execute(
+      'INSERT INTO resources (title, url, category, type, created_at) VALUES (?, ?, ?, ?, NOW())',
+      [title, url, category, type]
+    );
 
-#### **Step 8: Test Your Backend**
+    res.json({ message: 'Resource added successfully' });
+  } catch (error) {
+    console.error('Add resource error:', error);
+    res.status(500).json({ error: 'Failed to add resource' });
+  }
+});
 
-1. **Copy your Render URL** (like `https://rnpathfinders.onrender.com`)
+// Admin: Delete resource
+app.delete('/api/admin/resources/:id', verifyToken, async (req, res) => {
+  try {
+    if (!req.user.isAdmin) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
 
-2. **Open browser and visit:**
-```
-   https://YOUR-RENDER-URL.onrender.com/api/health
+    await pool.execute('DELETE FROM resources WHERE id = ?', [req.params.id]);
+
+    res.json({ message: 'Resource deleted successfully' });
+  } catch (error) {
+    console.error('Delete resource error:', error);
+    res.status(500).json({ error: 'Failed to delete resource' });
+  }
+});
+
+// Start server
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => {
+  console.log(`✅ RNPathfinders API running on port ${PORT}`);
+  console.log(`🌐 Frontend URL: ${process.env.FRONTEND_URL}`);
+});
