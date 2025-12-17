@@ -13,18 +13,37 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejec
 
 async function initializeDatabase() {
   try {
-    await pool.query(`CREATE TABLE IF NOT EXISTS users (id SERIAL PRIMARY KEY, email VARCHAR(255) UNIQUE NOT NULL, password VARCHAR(255) NOT NULL, is_admin BOOLEAN DEFAULT FALSE, primary_subject_id INTEGER, subject_locked_at TIMESTAMP, lock_expires_at TIMESTAMP, aar_count INTEGER DEFAULT 0, session_count INTEGER DEFAULT 0, total_study_minutes INTEGER DEFAULT 0, last_activity TIMESTAMP, onboarding_complete BOOLEAN DEFAULT FALSE, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`);
-    await pool.query(`CREATE TABLE IF NOT EXISTS access_codes (id SERIAL PRIMARY KEY, code VARCHAR(50) UNIQUE NOT NULL, used BOOLEAN DEFAULT FALSE, used_by INTEGER REFERENCES users(id), used_at TIMESTAMP, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`);
-    await pool.query(`CREATE TABLE IF NOT EXISTS departments (id SERIAL PRIMARY KEY, name VARCHAR(100) NOT NULL, code VARCHAR(20) UNIQUE NOT NULL, icon VARCHAR(10) DEFAULT '📚', is_active BOOLEAN DEFAULT TRUE, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`);
-    await pool.query(`CREATE TABLE IF NOT EXISTS subjects (id SERIAL PRIMARY KEY, department_id INTEGER REFERENCES departments(id), name VARCHAR(100) NOT NULL, code VARCHAR(20) NOT NULL, estimated_hours INTEGER DEFAULT 20, is_active BOOLEAN DEFAULT TRUE, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE(department_id, code))`);
-    await pool.query(`CREATE TABLE IF NOT EXISTS resources (id SERIAL PRIMARY KEY, subject_id INTEGER REFERENCES subjects(id), title VARCHAR(255) NOT NULL, url TEXT NOT NULL, type VARCHAR(50) NOT NULL, duration_minutes INTEGER DEFAULT 0, sort_order INTEGER DEFAULT 0, is_active BOOLEAN DEFAULT TRUE, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`);
-    await pool.query(`CREATE TABLE IF NOT EXISTS study_sessions (id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id), subject_id INTEGER REFERENCES subjects(id), session_type VARCHAR(50) DEFAULT 'active_recall', planned_duration INTEGER NOT NULL, actual_duration INTEGER, started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, completed_at TIMESTAMP, is_completed BOOLEAN DEFAULT FALSE)`);
-    await pool.query(`CREATE TABLE IF NOT EXISTS aar_entries (id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id), subject_id INTEGER REFERENCES subjects(id), what_worked TEXT NOT NULL, what_blocked TEXT NOT NULL, tomorrow_plan TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`);
-    await pool.query(`CREATE TABLE IF NOT EXISTS user_progress (id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id), resource_id INTEGER REFERENCES resources(id), completed BOOLEAN DEFAULT FALSE, completed_at TIMESTAMP, UNIQUE(user_id, resource_id))`);
+    // DROP ALL TABLES FIRST to ensure clean schema
+    console.log('🗑️ Dropping old tables...');
+    await pool.query('DROP TABLE IF EXISTS user_progress CASCADE');
+    await pool.query('DROP TABLE IF EXISTS unlock_history CASCADE');
+    await pool.query('DROP TABLE IF EXISTS aar_entries CASCADE');
+    await pool.query('DROP TABLE IF EXISTS study_sessions CASCADE');
+    await pool.query('DROP TABLE IF EXISTS resources CASCADE');
+    await pool.query('DROP TABLE IF EXISTS subjects CASCADE');
+    await pool.query('DROP TABLE IF EXISTS departments CASCADE');
+    await pool.query('DROP TABLE IF EXISTS access_codes CASCADE');
+    await pool.query('DROP TABLE IF EXISTS users CASCADE');
+    console.log('✅ Old tables dropped');
 
+    // CREATE FRESH TABLES
+    console.log('📦 Creating new tables...');
+    await pool.query(`CREATE TABLE users (id SERIAL PRIMARY KEY, email VARCHAR(255) UNIQUE NOT NULL, password VARCHAR(255) NOT NULL, is_admin BOOLEAN DEFAULT FALSE, primary_subject_id INTEGER, subject_locked_at TIMESTAMP, lock_expires_at TIMESTAMP, aar_count INTEGER DEFAULT 0, session_count INTEGER DEFAULT 0, total_study_minutes INTEGER DEFAULT 0, last_activity TIMESTAMP, onboarding_complete BOOLEAN DEFAULT FALSE, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`);
+    await pool.query(`CREATE TABLE access_codes (id SERIAL PRIMARY KEY, code VARCHAR(50) UNIQUE NOT NULL, used BOOLEAN DEFAULT FALSE, used_by INTEGER REFERENCES users(id), used_at TIMESTAMP, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`);
+    await pool.query(`CREATE TABLE departments (id SERIAL PRIMARY KEY, name VARCHAR(100) NOT NULL, code VARCHAR(20) UNIQUE NOT NULL, icon VARCHAR(10) DEFAULT '📚', is_active BOOLEAN DEFAULT TRUE, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`);
+    await pool.query(`CREATE TABLE subjects (id SERIAL PRIMARY KEY, department_id INTEGER REFERENCES departments(id), name VARCHAR(100) NOT NULL, code VARCHAR(20) NOT NULL, estimated_hours INTEGER DEFAULT 20, is_active BOOLEAN DEFAULT TRUE, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE(department_id, code))`);
+    await pool.query(`CREATE TABLE resources (id SERIAL PRIMARY KEY, subject_id INTEGER REFERENCES subjects(id), title VARCHAR(255) NOT NULL, url TEXT NOT NULL, type VARCHAR(50) NOT NULL, duration_minutes INTEGER DEFAULT 0, sort_order INTEGER DEFAULT 0, is_active BOOLEAN DEFAULT TRUE, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`);
+    await pool.query(`CREATE TABLE study_sessions (id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id), subject_id INTEGER REFERENCES subjects(id), session_type VARCHAR(50) DEFAULT 'active_recall', planned_duration INTEGER NOT NULL, actual_duration INTEGER, started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, completed_at TIMESTAMP, is_completed BOOLEAN DEFAULT FALSE)`);
+    await pool.query(`CREATE TABLE aar_entries (id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id), subject_id INTEGER REFERENCES subjects(id), what_worked TEXT NOT NULL, what_blocked TEXT NOT NULL, tomorrow_plan TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`);
+    await pool.query(`CREATE TABLE user_progress (id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id), resource_id INTEGER REFERENCES resources(id), completed BOOLEAN DEFAULT FALSE, completed_at TIMESTAMP, UNIQUE(user_id, resource_id))`);
+    console.log('✅ Tables created');
+
+    // INSERT ACCESS CODES
     const codes = ['OPERATIVE2024', 'MISSION2024', 'ACADEMIC2024', 'RNPATH2024', 'STUDY2024'];
-    for (const c of codes) await pool.query('INSERT INTO access_codes (code) VALUES ($1) ON CONFLICT DO NOTHING', [c]);
+    for (const c of codes) await pool.query('INSERT INTO access_codes (code) VALUES ($1)', [c]);
+    console.log('✅ Access codes inserted');
 
+    // INSERT DEPARTMENTS
     const depts = [
       { name: 'Medicine & Nursing', code: 'MED', icon: '🏥' },
       { name: 'Engineering', code: 'ENG', icon: '⚙️' },
@@ -32,8 +51,10 @@ async function initializeDatabase() {
       { name: 'Business', code: 'BUS', icon: '📊' },
       { name: 'General Studies', code: 'GEN', icon: '📚' }
     ];
-    for (const d of depts) await pool.query('INSERT INTO departments (name, code, icon) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING', [d.name, d.code, d.icon]);
+    for (const d of depts) await pool.query('INSERT INTO departments (name, code, icon) VALUES ($1, $2, $3)', [d.name, d.code, d.icon]);
+    console.log('✅ Departments inserted');
 
+    // ALL SUBJECTS WITH VIDEOS
     const allSubjects = {
       MED: [
         {c:'MED101',n:'Human Anatomy',h:35,v:[{t:'Anatomy Full Course',u:'https://www.youtube.com/watch?v=gEUu-A2wfSE'},{t:'Anatomy Crash Course',u:'https://www.youtube.com/watch?v=uBGl2BujkPQ'},{t:'Body Systems',u:'https://www.youtube.com/watch?v=Ae4MadKPJC0'}]},
@@ -180,17 +201,19 @@ async function initializeDatabase() {
       ]
     };
 
+    // INSERT SUBJECTS AND VIDEOS
+    console.log('📚 Inserting subjects and videos...');
     for (const [deptCode, subjects] of Object.entries(allSubjects)) {
       const deptRes = await pool.query('SELECT id FROM departments WHERE code=$1', [deptCode]);
       if (deptRes.rows.length > 0) {
         const deptId = deptRes.rows[0].id;
         for (const s of subjects) {
-          await pool.query('INSERT INTO subjects (department_id,code,name,estimated_hours) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING', [deptId,s.c,s.n,s.h]);
+          await pool.query('INSERT INTO subjects (department_id,code,name,estimated_hours) VALUES ($1,$2,$3,$4)', [deptId,s.c,s.n,s.h]);
           const subjRes = await pool.query('SELECT id FROM subjects WHERE code=$1 AND department_id=$2', [s.c,deptId]);
           if (subjRes.rows.length > 0) {
             const subjId = subjRes.rows[0].id;
             for (let i=0; i<s.v.length; i++) {
-              await pool.query('INSERT INTO resources (subject_id,title,url,type,sort_order) VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING', [subjId,s.v[i].t,s.v[i].u,'Video',i+1]);
+              await pool.query('INSERT INTO resources (subject_id,title,url,type,sort_order) VALUES ($1,$2,$3,$4,$5)', [subjId,s.v[i].t,s.v[i].u,'Video',i+1]);
             }
           }
         }
