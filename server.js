@@ -463,6 +463,31 @@ app.post('/api/admin/subjects', verifyToken, async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'Failed' }); }
 });
 
+// Admin: Unlock user (reset their subject lock)
+app.post('/api/admin/users/:id/unlock', verifyToken, async (req, res) => {
+  try {
+    if (!req.user.isAdmin) return res.status(403).json({ error: 'Admin required' });
+    const userId = req.params.id;
+    await pool.query('UPDATE users SET primary_subject_id=NULL,subject_locked_at=NULL,lock_expires_at=NULL,onboarding_complete=FALSE,aar_count=0,session_count=0 WHERE id=$1', [userId]);
+    res.json({ message: 'User unlocked successfully. They can now choose a new subject.' });
+  } catch (e) { res.status(500).json({ error: 'Failed to unlock user' }); }
+});
+
+// Admin: Delete user
+app.delete('/api/admin/users/:id', verifyToken, async (req, res) => {
+  try {
+    if (!req.user.isAdmin) return res.status(403).json({ error: 'Admin required' });
+    const userId = req.params.id;
+    if (parseInt(userId) === req.user.userId) return res.status(400).json({ error: 'Cannot delete yourself' });
+    await pool.query('DELETE FROM user_progress WHERE user_id=$1', [userId]);
+    await pool.query('DELETE FROM aar_entries WHERE user_id=$1', [userId]);
+    await pool.query('DELETE FROM study_sessions WHERE user_id=$1', [userId]);
+    await pool.query('UPDATE access_codes SET used=FALSE,used_by=NULL,used_at=NULL WHERE used_by=$1', [userId]);
+    await pool.query('DELETE FROM users WHERE id=$1', [userId]);
+    res.json({ message: 'User deleted' });
+  } catch (e) { res.status(500).json({ error: 'Failed to delete user' }); }
+});
+
 const PORT = process.env.PORT || 5000;
 initializeDatabase().then(() => {
   app.listen(PORT, () => {
