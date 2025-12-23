@@ -1,7 +1,6 @@
 {
   "name": "rnpathfinders-backend",
-  "version": "1.0.0",
-  "description": "RNPathfinders Backend API with PostgreSQL",
+  "version": "3.0.0",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -12,9 +11,7 @@
     "bcryptjs": "^2.4.3",
     "jsonwebtoken": "^9.0.2",
     "cors": "^2.8.5",
-    "dotenv": "^16.3.1"
-  },
-  "engines": {
-    "node": ">=14.0.0"
+    "dotenv": "^16.3.1",
+    "nodemailer": "^6.9.7"
   }
 }
