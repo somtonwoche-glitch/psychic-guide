@@ -20,7 +20,7 @@ const transporter = nodemailer.createTransport({
   secure: false,
   auth: {
     user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS
+    pass: process.env.RN
   }
 });
 
@@ -29,9 +29,9 @@ async function sendEmail(to, subject, html) {
   try {
     console.log('📧 Attempting to send email...');
     console.log('📧 SMTP_USER exists:', !!process.env.SMTP_USER);
-    console.log('📧 SMTP_PASS exists:', !!process.env.SMTP_PASS);
+    console.log('📧 RN exists:', !!process.env.RN);
     
-    if (!process.env.SMTP_USER || !process.env.SMTP_PASS) {
+    if (!process.env.SMTP_USER || !process.env.RN) {
       console.log('📧 Email not configured. Would send to:', to);
       console.log('Subject:', subject);
       return { success: true, message: 'Email logging only (SMTP not configured)' };
