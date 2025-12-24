@@ -795,6 +795,8 @@ const PORT = process.env.PORT || 5000;
 initializeDatabase().then(() => {
   app.listen(PORT, () => {
     console.log(`✅ RNPathfinders API v3.0 running on port ${PORT}`);
+    console.log(`📧 BREVO_API_KEY length: ${process.env.BREVO_API_KEY ? process.env.BREVO_API_KEY.length : 0}`);
+    console.log(`📧 SENDER_EMAIL: ${process.env.SENDER_EMAIL || 'not set'}`);
     console.log(`📧 Email: ${process.env.BREVO_API_KEY ? 'Configured' : 'Not configured'}`);
     console.log(`🔐 Features: Password Reset, Email Codes, User Unlock Requests`);
   });
