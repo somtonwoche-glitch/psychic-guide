@@ -4,7 +4,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const cors = require('cors');
 const crypto = require('crypto');
-const nodemailer = require('nodemailer');
+
 require('dotenv').config();
 
 const app = express();
@@ -13,36 +13,37 @@ app.use(cors({ origin: process.env.FRONTEND_URL || '*', credentials: true }));
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
 
-// Email transporter setup (configure in .env)
-const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST || 'smtp-relay.brevo.com',
-  port: parseInt(process.env.SMTP_PORT) || 587,
-  secure: false,
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.RN
-  }
-});
-
-// Send email helper function
+// Email setup using Brevo HTTP API (no SMTP needed)
 async function sendEmail(to, subject, html) {
   try {
     console.log('📧 Attempting to send email...');
-    console.log('📧 SMTP_USER exists:', !!process.env.SMTP_USER);
-    console.log('📧 RN exists:', !!process.env.RN);
     
-    if (!process.env.SMTP_USER || !process.env.RN) {
+    if (!process.env.BREVO_API_KEY) {
       console.log('📧 Email not configured. Would send to:', to);
       console.log('Subject:', subject);
-      return { success: true, message: 'Email logging only (SMTP not configured)' };
+      return { success: true, message: 'Email logging only (API key not configured)' };
     }
     
-    await transporter.sendMail({
-      from: `"RNPathfinders" <${process.env.SMTP_USER}>`,
-      to,
-      subject,
-      html
+    const response = await fetch('https://api.brevo.com/v3/smtp/email', {
+      method: 'POST',
+      headers: {
+        'accept': 'application/json',
+        'api-key': process.env.BREVO_API_KEY,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        sender: { name: 'RNPathfinders', email: process.env.SENDER_EMAIL || 'noreply@rnpathfinders.ng' },
+        to: [{ email: to }],
+        subject: subject,
+        htmlContent: html
+      })
     });
+    
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.message || 'Failed to send email');
+    }
+    
     console.log('📧 Email sent to:', to);
     return { success: true };
   } catch (error) {
@@ -794,7 +795,7 @@ const PORT = process.env.PORT || 5000;
 initializeDatabase().then(() => {
   app.listen(PORT, () => {
     console.log(`✅ RNPathfinders API v3.0 running on port ${PORT}`);
-    console.log(`📧 Email: ${process.env.SMTP_USER ? 'Configured' : 'Not configured (logging only)'}`);
+    console.log(`📧 Email: ${process.env.BREVO_API_KEY ? 'Configured' : 'Not configured'}`);
     console.log(`🔐 Features: Password Reset, Email Codes, User Unlock Requests`);
   });
 });
