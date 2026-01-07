@@ -7,32 +7,28 @@ require('dotenv').config();
 
 const app = express();
 
-// Middleware
 app.use(express.json());
 app.use(cors({
   origin: process.env.FRONTEND_URL || 'https://rnpathfinders.ng',
   credentials: true
 }));
 
-// FIXED: Enhanced database pool with better connection handling
+// OPTIMIZED: Enhanced database pool with connection reuse
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: {
-    rejectUnauthorized: false
-  },
-  max: 20, // Maximum number of clients in the pool
-  idleTimeoutMillis: 30000, // Close idle clients after 30 seconds
-  connectionTimeoutMillis: 10000, // Return error after 10 seconds if connection not established
+  ssl: { rejectUnauthorized: false },
+  max: 20,
+  min: 5, // Keep 5 connections always ready
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 10000,
   keepAlive: true,
   keepAliveInitialDelayMillis: 10000
 });
 
-// FIXED: Handle pool errors
 pool.on('error', (err) => {
-  console.error('❌ Unexpected database pool error:', err);
+  console.error('❌ Database pool error:', err);
 });
 
-// FIXED: Test database connection on startup
 pool.query('SELECT NOW()', (err, res) => {
   if (err) {
     console.error('❌ Database connection failed:', err);
@@ -41,17 +37,9 @@ pool.query('SELECT NOW()', (err, res) => {
   }
 });
 
-// Email configuration check
 const emailConfigured = process.env.BREVO_API_KEY && process.env.SENDER_EMAIL;
-if (emailConfigured) {
-  console.log('📧 Email: Configured');
-  console.log('📧 BREVO_API_KEY length:', process.env.BREVO_API_KEY?.length || 0);
-  console.log('📧 SENDER_EMAIL:', process.env.SENDER_EMAIL);
-} else {
-  console.log('📧 Email: Not configured (logging only)');
-}
 
-// FIXED: Initialize database with retry logic
+// OPTIMIZED: Batch insert subjects for faster seeding
 async function initializeDatabase() {
   let retries = 3;
   while (retries > 0) {
@@ -96,6 +84,7 @@ async function initializeDatabase() {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )`);
 
+      // OPTIMIZED: Add index on department_id for faster subject queries
       await pool.query(`CREATE TABLE IF NOT EXISTS subjects (
         id SERIAL PRIMARY KEY,
         department_id INTEGER REFERENCES departments(id),
@@ -106,6 +95,8 @@ async function initializeDatabase() {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(department_id, code)
       )`);
+      
+      await pool.query(`CREATE INDEX IF NOT EXISTS idx_subjects_department ON subjects(department_id)`);
 
       await pool.query(`CREATE TABLE IF NOT EXISTS resources (
         id SERIAL PRIMARY KEY,
@@ -118,6 +109,8 @@ async function initializeDatabase() {
         is_active BOOLEAN DEFAULT TRUE,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )`);
+      
+      await pool.query(`CREATE INDEX IF NOT EXISTS idx_resources_subject ON resources(subject_id)`);
 
       await pool.query(`CREATE TABLE IF NOT EXISTS study_sessions (
         id SERIAL PRIMARY KEY,
@@ -130,6 +123,8 @@ async function initializeDatabase() {
         completed_at TIMESTAMP,
         is_completed BOOLEAN DEFAULT FALSE
       )`);
+      
+      await pool.query(`CREATE INDEX IF NOT EXISTS idx_sessions_user ON study_sessions(user_id)`);
 
       await pool.query(`CREATE TABLE IF NOT EXISTS aar_entries (
         id SERIAL PRIMARY KEY,
@@ -140,6 +135,8 @@ async function initializeDatabase() {
         tomorrow_plan TEXT NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )`);
+      
+      await pool.query(`CREATE INDEX IF NOT EXISTS idx_aar_user ON aar_entries(user_id)`);
 
       await pool.query(`CREATE TABLE IF NOT EXISTS user_progress (
         id SERIAL PRIMARY KEY,
@@ -159,19 +156,17 @@ async function initializeDatabase() {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )`);
 
-      console.log('✅ Tables ready');
+      console.log('✅ Tables and indexes ready');
 
-      // Check if initial data exists
       const codesCheck = await pool.query('SELECT COUNT(*) as count FROM access_codes');
       if (parseInt(codesCheck.rows[0].count) === 0) {
         console.log('📝 First run - inserting initial data...');
         
-        // Insert default codes
+        // Insert codes
         const codes = ['OPERATIVE2024', 'MISSION2024', 'ACADEMIC2024', 'RNPATH2024', 'STUDY2024'];
         for (const code of codes) {
           await pool.query('INSERT INTO access_codes (code) VALUES ($1) ON CONFLICT DO NOTHING', [code]);
         }
-        console.log('✅ Access codes inserted');
 
         // Insert departments
         const departments = [
@@ -188,186 +183,191 @@ async function initializeDatabase() {
             [dept.name, dept.code, dept.icon]
           );
         }
-        console.log('✅ Departments inserted');
 
-        // Get department IDs for subjects
         const deptIds = await pool.query('SELECT id, code FROM departments');
         const deptMap = {};
         deptIds.rows.forEach(d => deptMap[d.code] = d.id);
 
-        // Insert all 130 subjects
-        const subjectsByDept = {
-          MED: [
-            {code:'MED101',name:'Human Anatomy',hours:35},
-            {code:'MED102',name:'Human Physiology',hours:35},
-            {code:'MED201',name:'Pharmacology',hours:35},
-            {code:'MED202',name:'Pathophysiology',hours:30},
-            {code:'MED203',name:'Microbiology',hours:30},
-            {code:'MED204',name:'Biochemistry',hours:30},
-            {code:'MED205',name:'Immunology',hours:25},
-            {code:'MED206',name:'Histology',hours:25},
-            {code:'MED207',name:'Embryology',hours:20},
-            {code:'NUR101',name:'Fundamentals of Nursing',hours:25},
-            {code:'NUR201',name:'Medical-Surgical Nursing',hours:40},
-            {code:'NUR202',name:'Pediatric Nursing',hours:25},
-            {code:'NUR203',name:'Obstetric Nursing',hours:25},
-            {code:'NUR204',name:'Psychiatric Nursing',hours:25},
-            {code:'NUR205',name:'Community Health Nursing',hours:25},
-            {code:'NUR301',name:'Critical Care Nursing',hours:30},
-            {code:'NUR302',name:'Emergency Nursing',hours:25},
-            {code:'NUR303',name:'Geriatric Nursing',hours:20},
-            {code:'NUR304',name:'Nursing Research',hours:20},
-            {code:'NUR305',name:'Nursing Leadership',hours:20},
-            {code:'NUR306',name:'Nursing Ethics',hours:15},
-            {code:'NUR307',name:'Health Assessment',hours:20}
-          ],
-          ENG: [
-            {code:'ENG101',name:'Engineering Mathematics I',hours:40},
-            {code:'ENG102',name:'Engineering Mathematics II',hours:40},
-            {code:'ENG103',name:'Engineering Mathematics III',hours:40},
-            {code:'ENG104',name:'Calculus I',hours:35},
-            {code:'ENG105',name:'Calculus II',hours:35},
-            {code:'ENG106',name:'Linear Algebra',hours:30},
-            {code:'ENG107',name:'Differential Equations',hours:30},
-            {code:'ENG201',name:'Engineering Mechanics',hours:35},
-            {code:'ENG202',name:'Thermodynamics',hours:30},
-            {code:'ENG203',name:'Fluid Mechanics',hours:30},
-            {code:'ENG204',name:'Strength of Materials',hours:30},
-            {code:'ENG205',name:'Engineering Drawing',hours:25},
-            {code:'ENG301',name:'Circuit Theory',hours:35},
-            {code:'ENG302',name:'Electronics I',hours:35},
-            {code:'ENG303',name:'Electronics II',hours:35},
-            {code:'ENG304',name:'Digital Electronics',hours:30},
-            {code:'ENG305',name:'Signals and Systems',hours:30},
-            {code:'ENG306',name:'Control Systems',hours:30},
-            {code:'ENG307',name:'Power Systems',hours:30},
-            {code:'ENG308',name:'Electrical Machines',hours:30},
-            {code:'ENG401',name:'Introduction to Programming',hours:40},
-            {code:'ENG402',name:'Data Structures',hours:40},
-            {code:'ENG403',name:'Algorithms',hours:35},
-            {code:'ENG404',name:'Database Systems',hours:30},
-            {code:'ENG405',name:'Computer Networks',hours:30},
-            {code:'ENG406',name:'Operating Systems',hours:30},
-            {code:'ENG501',name:'Structural Analysis',hours:35},
-            {code:'ENG502',name:'Geotechnical Engineering',hours:30},
-            {code:'ENG503',name:'Transportation Engineering',hours:25},
-            {code:'ENG504',name:'Machine Design',hours:30},
-            {code:'ENG505',name:'Manufacturing Processes',hours:30}
-          ],
-          SCI: [
-            {code:'SCI101',name:'Physics I (Mechanics)',hours:40},
-            {code:'SCI102',name:'Physics II (Electricity & Magnetism)',hours:40},
-            {code:'SCI103',name:'Physics III (Waves & Optics)',hours:35},
-            {code:'SCI104',name:'Modern Physics',hours:30},
-            {code:'SCI105',name:'Quantum Mechanics',hours:35},
-            {code:'SCI106',name:'Thermodynamics & Statistical Mechanics',hours:30},
-            {code:'SCI201',name:'General Chemistry I',hours:40},
-            {code:'SCI202',name:'General Chemistry II',hours:40},
-            {code:'SCI203',name:'Organic Chemistry I',hours:40},
-            {code:'SCI204',name:'Organic Chemistry II',hours:40},
-            {code:'SCI205',name:'Physical Chemistry',hours:35},
-            {code:'SCI206',name:'Analytical Chemistry',hours:30},
-            {code:'SCI207',name:'Inorganic Chemistry',hours:30},
-            {code:'SCI301',name:'General Biology',hours:35},
-            {code:'SCI302',name:'Cell Biology',hours:35},
-            {code:'SCI303',name:'Genetics',hours:35},
-            {code:'SCI304',name:'Molecular Biology',hours:35},
-            {code:'SCI305',name:'Ecology',hours:30},
-            {code:'SCI306',name:'Evolution',hours:25},
-            {code:'SCI401',name:'Calculus I',hours:40},
-            {code:'SCI402',name:'Calculus II',hours:40},
-            {code:'SCI403',name:'Linear Algebra',hours:30},
-            {code:'SCI404',name:'Probability & Statistics',hours:35},
-            {code:'SCI405',name:'Discrete Mathematics',hours:30},
-            {code:'SCI501',name:'Introduction to Computer Science',hours:40},
-            {code:'SCI502',name:'Programming Fundamentals',hours:40},
-            {code:'SCI503',name:'Data Structures',hours:35},
-            {code:'SCI504',name:'Algorithms',hours:35}
-          ],
-          BUS: [
-            {code:'BUS101',name:'Principles of Accounting I',hours:35},
-            {code:'BUS102',name:'Principles of Accounting II',hours:35},
-            {code:'BUS103',name:'Cost Accounting',hours:30},
-            {code:'BUS104',name:'Management Accounting',hours:30},
-            {code:'BUS105',name:'Auditing',hours:30},
-            {code:'BUS106',name:'Taxation',hours:25},
-            {code:'BUS107',name:'Financial Statement Analysis',hours:25},
-            {code:'BUS201',name:'Corporate Finance',hours:35},
-            {code:'BUS202',name:'Investment Analysis',hours:30},
-            {code:'BUS203',name:'Financial Markets',hours:30},
-            {code:'BUS204',name:'International Finance',hours:25},
-            {code:'BUS301',name:'Microeconomics',hours:35},
-            {code:'BUS302',name:'Macroeconomics',hours:35},
-            {code:'BUS303',name:'Econometrics',hours:30},
-            {code:'BUS401',name:'Business Statistics I',hours:35},
-            {code:'BUS402',name:'Business Statistics II',hours:35},
-            {code:'BUS403',name:'Quantitative Methods',hours:30},
-            {code:'BUS501',name:'Principles of Management',hours:30},
-            {code:'BUS502',name:'Organizational Behavior',hours:30},
-            {code:'BUS503',name:'Human Resource Management',hours:30},
-            {code:'BUS504',name:'Operations Management',hours:30},
-            {code:'BUS505',name:'Strategic Management',hours:30},
-            {code:'BUS506',name:'Project Management',hours:25},
-            {code:'BUS601',name:'Marketing Principles',hours:30},
-            {code:'BUS602',name:'Consumer Behavior',hours:25},
-            {code:'BUS603',name:'Marketing Research',hours:25},
-            {code:'BUS701',name:'Business Law',hours:25},
-            {code:'BUS702',name:'Entrepreneurship',hours:25},
-            {code:'BUS703',name:'Business Ethics',hours:20}
-          ],
-          GEN: [
-            {code:'GEN101',name:'Use of English I',hours:25},
-            {code:'GEN102',name:'Use of English II',hours:25},
-            {code:'GEN103',name:'Communication Skills',hours:20},
-            {code:'GEN104',name:'Technical Writing',hours:20},
-            {code:'GEN201',name:'Nigerian History',hours:20},
-            {code:'GEN202',name:'Nigerian Government',hours:20},
-            {code:'GEN203',name:'African Studies',hours:20},
-            {code:'GEN301',name:'Philosophy & Logic',hours:25},
-            {code:'GEN302',name:'Critical Thinking',hours:20},
-            {code:'GEN401',name:'Introduction to Psychology',hours:25},
-            {code:'GEN402',name:'Introduction to Sociology',hours:25},
-            {code:'GEN501',name:'Computer Applications',hours:25},
-            {code:'GEN502',name:'Digital Literacy',hours:20},
-            {code:'GEN503',name:'Introduction to ICT',hours:20},
-            {code:'GEN601',name:'Research Methods',hours:30},
-            {code:'GEN602',name:'Academic Writing',hours:25},
-            {code:'GEN603',name:'Study Skills',hours:20},
-            {code:'GEN701',name:'Entrepreneurship Development',hours:25},
-            {code:'GEN702',name:'Business Communication',hours:20},
-            {code:'GEN703',name:'Leadership Skills',hours:20},
-            {code:'GEN704',name:'Environmental Science',hours:20}
-          ]
-        };
+        // All 130 subjects
+        const allSubjects = [
+          // Medicine & Nursing (22 subjects)
+          {dept:'MED',code:'MED101',name:'Human Anatomy',hours:35},
+          {dept:'MED',code:'MED102',name:'Human Physiology',hours:35},
+          {dept:'MED',code:'MED201',name:'Pharmacology',hours:35},
+          {dept:'MED',code:'MED202',name:'Pathophysiology',hours:30},
+          {dept:'MED',code:'MED203',name:'Microbiology',hours:30},
+          {dept:'MED',code:'MED204',name:'Biochemistry',hours:30},
+          {dept:'MED',code:'MED205',name:'Immunology',hours:25},
+          {dept:'MED',code:'MED206',name:'Histology',hours:25},
+          {dept:'MED',code:'MED207',name:'Embryology',hours:20},
+          {dept:'MED',code:'NUR101',name:'Fundamentals of Nursing',hours:25},
+          {dept:'MED',code:'NUR201',name:'Medical-Surgical Nursing',hours:40},
+          {dept:'MED',code:'NUR202',name:'Pediatric Nursing',hours:25},
+          {dept:'MED',code:'NUR203',name:'Obstetric Nursing',hours:25},
+          {dept:'MED',code:'NUR204',name:'Psychiatric Nursing',hours:25},
+          {dept:'MED',code:'NUR205',name:'Community Health Nursing',hours:25},
+          {dept:'MED',code:'NUR301',name:'Critical Care Nursing',hours:30},
+          {dept:'MED',code:'NUR302',name:'Emergency Nursing',hours:25},
+          {dept:'MED',code:'NUR303',name:'Geriatric Nursing',hours:20},
+          {dept:'MED',code:'NUR304',name:'Nursing Research',hours:20},
+          {dept:'MED',code:'NUR305',name:'Nursing Leadership',hours:20},
+          {dept:'MED',code:'NUR306',name:'Nursing Ethics',hours:15},
+          {dept:'MED',code:'NUR307',name:'Health Assessment',hours:20},
+          
+          // Engineering (31 subjects)
+          {dept:'ENG',code:'ENG101',name:'Engineering Mathematics I',hours:40},
+          {dept:'ENG',code:'ENG102',name:'Engineering Mathematics II',hours:40},
+          {dept:'ENG',code:'ENG103',name:'Engineering Mathematics III',hours:40},
+          {dept:'ENG',code:'ENG104',name:'Calculus I',hours:35},
+          {dept:'ENG',code:'ENG105',name:'Calculus II',hours:35},
+          {dept:'ENG',code:'ENG106',name:'Linear Algebra',hours:30},
+          {dept:'ENG',code:'ENG107',name:'Differential Equations',hours:30},
+          {dept:'ENG',code:'ENG201',name:'Engineering Mechanics',hours:35},
+          {dept:'ENG',code:'ENG202',name:'Thermodynamics',hours:30},
+          {dept:'ENG',code:'ENG203',name:'Fluid Mechanics',hours:30},
+          {dept:'ENG',code:'ENG204',name:'Strength of Materials',hours:30},
+          {dept:'ENG',code:'ENG205',name:'Engineering Drawing',hours:25},
+          {dept:'ENG',code:'ENG301',name:'Circuit Theory',hours:35},
+          {dept:'ENG',code:'ENG302',name:'Electronics I',hours:35},
+          {dept:'ENG',code:'ENG303',name:'Electronics II',hours:35},
+          {dept:'ENG',code:'ENG304',name:'Digital Electronics',hours:30},
+          {dept:'ENG',code:'ENG305',name:'Signals and Systems',hours:30},
+          {dept:'ENG',code:'ENG306',name:'Control Systems',hours:30},
+          {dept:'ENG',code:'ENG307',name:'Power Systems',hours:30},
+          {dept:'ENG',code:'ENG308',name:'Electrical Machines',hours:30},
+          {dept:'ENG',code:'ENG401',name:'Introduction to Programming',hours:40},
+          {dept:'ENG',code:'ENG402',name:'Data Structures',hours:40},
+          {dept:'ENG',code:'ENG403',name:'Algorithms',hours:35},
+          {dept:'ENG',code:'ENG404',name:'Database Systems',hours:30},
+          {dept:'ENG',code:'ENG405',name:'Computer Networks',hours:30},
+          {dept:'ENG',code:'ENG406',name:'Operating Systems',hours:30},
+          {dept:'ENG',code:'ENG501',name:'Structural Analysis',hours:35},
+          {dept:'ENG',code:'ENG502',name:'Geotechnical Engineering',hours:30},
+          {dept:'ENG',code:'ENG503',name:'Transportation Engineering',hours:25},
+          {dept:'ENG',code:'ENG504',name:'Machine Design',hours:30},
+          {dept:'ENG',code:'ENG505',name:'Manufacturing Processes',hours:30},
+          
+          // Science (28 subjects)
+          {dept:'SCI',code:'SCI101',name:'Physics I (Mechanics)',hours:40},
+          {dept:'SCI',code:'SCI102',name:'Physics II (Electricity & Magnetism)',hours:40},
+          {dept:'SCI',code:'SCI103',name:'Physics III (Waves & Optics)',hours:35},
+          {dept:'SCI',code:'SCI104',name:'Modern Physics',hours:30},
+          {dept:'SCI',code:'SCI105',name:'Quantum Mechanics',hours:35},
+          {dept:'SCI',code:'SCI106',name:'Thermodynamics & Statistical Mechanics',hours:30},
+          {dept:'SCI',code:'SCI201',name:'General Chemistry I',hours:40},
+          {dept:'SCI',code:'SCI202',name:'General Chemistry II',hours:40},
+          {dept:'SCI',code:'SCI203',name:'Organic Chemistry I',hours:40},
+          {dept:'SCI',code:'SCI204',name:'Organic Chemistry II',hours:40},
+          {dept:'SCI',code:'SCI205',name:'Physical Chemistry',hours:35},
+          {dept:'SCI',code:'SCI206',name:'Analytical Chemistry',hours:30},
+          {dept:'SCI',code:'SCI207',name:'Inorganic Chemistry',hours:30},
+          {dept:'SCI',code:'SCI301',name:'General Biology',hours:35},
+          {dept:'SCI',code:'SCI302',name:'Cell Biology',hours:35},
+          {dept:'SCI',code:'SCI303',name:'Genetics',hours:35},
+          {dept:'SCI',code:'SCI304',name:'Molecular Biology',hours:35},
+          {dept:'SCI',code:'SCI305',name:'Ecology',hours:30},
+          {dept:'SCI',code:'SCI306',name:'Evolution',hours:25},
+          {dept:'SCI',code:'SCI401',name:'Calculus I',hours:40},
+          {dept:'SCI',code:'SCI402',name:'Calculus II',hours:40},
+          {dept:'SCI',code:'SCI403',name:'Linear Algebra',hours:30},
+          {dept:'SCI',code:'SCI404',name:'Probability & Statistics',hours:35},
+          {dept:'SCI',code:'SCI405',name:'Discrete Mathematics',hours:30},
+          {dept:'SCI',code:'SCI501',name:'Introduction to Computer Science',hours:40},
+          {dept:'SCI',code:'SCI502',name:'Programming Fundamentals',hours:40},
+          {dept:'SCI',code:'SCI503',name:'Data Structures',hours:35},
+          {dept:'SCI',code:'SCI504',name:'Algorithms',hours:35},
+          
+          // Business (28 subjects)
+          {dept:'BUS',code:'BUS101',name:'Principles of Accounting I',hours:35},
+          {dept:'BUS',code:'BUS102',name:'Principles of Accounting II',hours:35},
+          {dept:'BUS',code:'BUS103',name:'Cost Accounting',hours:30},
+          {dept:'BUS',code:'BUS104',name:'Management Accounting',hours:30},
+          {dept:'BUS',code:'BUS105',name:'Auditing',hours:30},
+          {dept:'BUS',code:'BUS106',name:'Taxation',hours:25},
+          {dept:'BUS',code:'BUS107',name:'Financial Statement Analysis',hours:25},
+          {dept:'BUS',code:'BUS201',name:'Corporate Finance',hours:35},
+          {dept:'BUS',code:'BUS202',name:'Investment Analysis',hours:30},
+          {dept:'BUS',code:'BUS203',name:'Financial Markets',hours:30},
+          {dept:'BUS',code:'BUS204',name:'International Finance',hours:25},
+          {dept:'BUS',code:'BUS301',name:'Microeconomics',hours:35},
+          {dept:'BUS',code:'BUS302',name:'Macroeconomics',hours:35},
+          {dept:'BUS',code:'BUS303',name:'Econometrics',hours:30},
+          {dept:'BUS',code:'BUS401',name:'Business Statistics I',hours:35},
+          {dept:'BUS',code:'BUS402',name:'Business Statistics II',hours:35},
+          {dept:'BUS',code:'BUS403',name:'Quantitative Methods',hours:30},
+          {dept:'BUS',code:'BUS501',name:'Principles of Management',hours:30},
+          {dept:'BUS',code:'BUS502',name:'Organizational Behavior',hours:30},
+          {dept:'BUS',code:'BUS503',name:'Human Resource Management',hours:30},
+          {dept:'BUS',code:'BUS504',name:'Operations Management',hours:30},
+          {dept:'BUS',code:'BUS505',name:'Strategic Management',hours:30},
+          {dept:'BUS',code:'BUS506',name:'Project Management',hours:25},
+          {dept:'BUS',code:'BUS601',name:'Marketing Principles',hours:30},
+          {dept:'BUS',code:'BUS602',name:'Consumer Behavior',hours:25},
+          {dept:'BUS',code:'BUS603',name:'Marketing Research',hours:25},
+          {dept:'BUS',code:'BUS701',name:'Business Law',hours:25},
+          {dept:'BUS',code:'BUS702',name:'Entrepreneurship',hours:25},
+          {dept:'BUS',code:'BUS703',name:'Business Ethics',hours:20},
+          
+          // General Studies (21 subjects)
+          {dept:'GEN',code:'GEN101',name:'Use of English I',hours:25},
+          {dept:'GEN',code:'GEN102',name:'Use of English II',hours:25},
+          {dept:'GEN',code:'GEN103',name:'Communication Skills',hours:20},
+          {dept:'GEN',code:'GEN104',name:'Technical Writing',hours:20},
+          {dept:'GEN',code:'GEN201',name:'Nigerian History',hours:20},
+          {dept:'GEN',code:'GEN202',name:'Nigerian Government',hours:20},
+          {dept:'GEN',code:'GEN203',name:'African Studies',hours:20},
+          {dept:'GEN',code:'GEN301',name:'Philosophy & Logic',hours:25},
+          {dept:'GEN',code:'GEN302',name:'Critical Thinking',hours:20},
+          {dept:'GEN',code:'GEN401',name:'Introduction to Psychology',hours:25},
+          {dept:'GEN',code:'GEN402',name:'Introduction to Sociology',hours:25},
+          {dept:'GEN',code:'GEN501',name:'Computer Applications',hours:25},
+          {dept:'GEN',code:'GEN502',name:'Digital Literacy',hours:20},
+          {dept:'GEN',code:'GEN503',name:'Introduction to ICT',hours:20},
+          {dept:'GEN',code:'GEN601',name:'Research Methods',hours:30},
+          {dept:'GEN',code:'GEN602',name:'Academic Writing',hours:25},
+          {dept:'GEN',code:'GEN603',name:'Study Skills',hours:20},
+          {dept:'GEN',code:'GEN701',name:'Entrepreneurship Development',hours:25},
+          {dept:'GEN',code:'GEN702',name:'Business Communication',hours:20},
+          {dept:'GEN',code:'GEN703',name:'Leadership Skills',hours:20},
+          {dept:'GEN',code:'GEN704',name:'Environmental Science',hours:20}
+        ];
 
-        console.log('📚 Inserting 130 subjects...');
-        for (const [deptCode, subjects] of Object.entries(subjectsByDept)) {
-          const deptId = deptMap[deptCode];
-          for (const subj of subjects) {
-            await pool.query(
-              'INSERT INTO subjects (department_id, code, name, estimated_hours) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING',
-              [deptId, subj.code, subj.name, subj.hours]
-            );
-          }
-        }
-        console.log('✅ All data inserted successfully');
+        // OPTIMIZED: Batch insert using VALUES list (much faster than loop)
+        console.log('📚 Inserting 130 subjects in batch...');
+        const values = [];
+        const params = [];
+        let paramIndex = 1;
+        
+        allSubjects.forEach(subj => {
+          values.push(`($${paramIndex}, $${paramIndex+1}, $${paramIndex+2}, $${paramIndex+3})`);
+          params.push(deptMap[subj.dept], subj.code, subj.name, subj.hours);
+          paramIndex += 4;
+        });
+        
+        const insertQuery = `
+          INSERT INTO subjects (department_id, code, name, estimated_hours) 
+          VALUES ${values.join(', ')} 
+          ON CONFLICT DO NOTHING
+        `;
+        
+        await pool.query(insertQuery, params);
+        console.log('✅ All 130 subjects inserted in single query');
       } else {
-        console.log('📊 Database already has data - skipping seed');
+        console.log('📊 Database already has data');
       }
 
       console.log('✅ Database initialization complete');
-      return; // Success, exit retry loop
+      return;
       
     } catch (error) {
       retries--;
-      console.error(`❌ Database init error (${retries} retries left):`, error.message);
+      console.error(`❌ Init error (${retries} retries left):`, error.message);
       if (retries === 0) throw error;
-      await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds before retry
+      await new Promise(resolve => setTimeout(resolve, 2000));
     }
   }
 }
 
-// Auth middleware
 const authMiddleware = async (req, res, next) => {
   try {
     const token = req.headers.authorization?.replace('Bearer ', '');
@@ -390,14 +390,13 @@ const authMiddleware = async (req, res, next) => {
   }
 };
 
-// FIXED: Improved registration with transaction and proper error handling
+// FIXED: Registration with transaction
 app.post('/api/auth/register', async (req, res) => {
-  const client = await pool.connect(); // Get dedicated client from pool
+  const client = await pool.connect();
   
   try {
     const { accessCode, email, password } = req.body;
 
-    // Validation
     if (!accessCode || !email || !password) {
       return res.status(400).json({ error: 'All fields required' });
     }
@@ -406,9 +405,8 @@ app.post('/api/auth/register', async (req, res) => {
       return res.status(400).json({ error: 'Password must be at least 8 characters' });
     }
 
-    await client.query('BEGIN'); // Start transaction
+    await client.query('BEGIN');
 
-    // Check access code with row lock to prevent race conditions
     const codeResult = await client.query(
       'SELECT * FROM access_codes WHERE code = $1 FOR UPDATE',
       [accessCode]
@@ -424,21 +422,16 @@ app.post('/api/auth/register', async (req, res) => {
       return res.status(400).json({ error: 'Access code already used' });
     }
 
-    // Check if email exists
     const emailCheck = await client.query('SELECT id FROM users WHERE email = $1', [email]);
     if (emailCheck.rows.length > 0) {
       await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Email already registered' });
     }
 
-    // Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
-
-    // Check if this will be first user (admin)
     const userCount = await client.query('SELECT COUNT(*) as count FROM users');
     const isFirstUser = parseInt(userCount.rows[0].count) === 0;
 
-    // Create user
     const userResult = await client.query(
       'INSERT INTO users (email, password, is_admin) VALUES ($1, $2, $3) RETURNING *',
       [email, hashedPassword, isFirstUser]
@@ -446,15 +439,13 @@ app.post('/api/auth/register', async (req, res) => {
 
     const newUser = userResult.rows[0];
 
-    // Mark code as used
     await client.query(
       'UPDATE access_codes SET used = true, used_by = $1, used_at = CURRENT_TIMESTAMP WHERE code = $2',
       [newUser.id, accessCode]
     );
 
-    await client.query('COMMIT'); // Commit transaction
+    await client.query('COMMIT');
 
-    // Generate token
     const token = jwt.sign(
       { userId: newUser.id },
       process.env.JWT_SECRET || 'your-secret-key-change-this',
@@ -472,15 +463,14 @@ app.post('/api/auth/register', async (req, res) => {
     });
 
   } catch (error) {
-    await client.query('ROLLBACK'); // Rollback on error
+    await client.query('ROLLBACK');
     console.error('Register error:', error);
     res.status(500).json({ error: 'Registration failed. Please try again.' });
   } finally {
-    client.release(); // CRITICAL: Always release client back to pool
+    client.release();
   }
 });
 
-// Login endpoint
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -502,7 +492,6 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
-    // Update last activity
     await pool.query('UPDATE users SET last_activity = CURRENT_TIMESTAMP WHERE id = $1', [user.id]);
 
     const token = jwt.sign(
@@ -528,17 +517,16 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-
-// Get current user
+// FIXED: Get current user with NULL handling
 app.get('/api/auth/me', authMiddleware, async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT 
         u.*,
-        s.name as primary_subject_name,
-        s.code as primary_subject_code,
-        d.name as department_name,
-        d.icon as department_icon
+        COALESCE(s.name, '') as primary_subject_name,
+        COALESCE(s.code, '') as primary_subject_code,
+        COALESCE(d.name, '') as department_name,
+        COALESCE(d.icon, '📚') as department_icon
       FROM users u
       LEFT JOIN subjects s ON u.primary_subject_id = s.id
       LEFT JOIN departments d ON s.department_id = d.id
@@ -552,7 +540,6 @@ app.get('/api/auth/me', authMiddleware, async (req, res) => {
   }
 });
 
-// Forgot password
 app.post('/api/auth/forgot-password', async (req, res) => {
   try {
     const { email } = req.body;
@@ -569,7 +556,7 @@ app.post('/api/auth/forgot-password', async (req, res) => {
 
     const crypto = require('crypto');
     const token = crypto.randomBytes(32).toString('hex');
-    const expiresAt = new Date(Date.now() + 3600000); // 1 hour
+    const expiresAt = new Date(Date.now() + 3600000);
 
     await pool.query(
       'INSERT INTO password_resets (email, token, expires_at) VALUES ($1, $2, $3)',
@@ -588,15 +575,11 @@ app.post('/api/auth/forgot-password', async (req, res) => {
             <p>Click the link below to reset your password:</p>
             <a href="${resetLink}">${resetLink}</a>
             <p>This link expires in 1 hour.</p>
-            <p>If you didn't request this, ignore this email.</p>
           `
         });
       } catch (emailError) {
         console.error('Email send failed:', emailError);
       }
-    } else {
-      console.log('📧 Would send reset link to:', email);
-      console.log('Reset link:', resetLink);
     }
 
     res.json({ message: 'If email exists, reset link sent' });
@@ -606,7 +589,6 @@ app.post('/api/auth/forgot-password', async (req, res) => {
   }
 });
 
-// Reset password
 app.post('/api/auth/reset-password', async (req, res) => {
   try {
     const { token, password } = req.body;
@@ -641,7 +623,6 @@ app.post('/api/auth/reset-password', async (req, res) => {
   }
 });
 
-// Get departments
 app.get('/api/departments', async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM departments WHERE is_active = true ORDER BY name');
@@ -652,7 +633,7 @@ app.get('/api/departments', async (req, res) => {
   }
 });
 
-// Get subjects by department
+// OPTIMIZED: Use index for faster subject queries
 app.get('/api/departments/:id/subjects', async (req, res) => {
   try {
     const result = await pool.query(
@@ -666,7 +647,6 @@ app.get('/api/departments/:id/subjects', async (req, res) => {
   }
 });
 
-// Get all subjects
 app.get('/api/subjects', authMiddleware, async (req, res) => {
   try {
     const result = await pool.query(`
@@ -683,7 +663,6 @@ app.get('/api/subjects', authMiddleware, async (req, res) => {
   }
 });
 
-// Declare subject
 app.post('/api/declare-subject', authMiddleware, async (req, res) => {
   try {
     const { subjectId } = req.body;
@@ -692,7 +671,7 @@ app.post('/api/declare-subject', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Subject ID required' });
     }
 
-    const lockExpires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+    const lockExpires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
     await pool.query(
       `UPDATE users SET 
@@ -711,7 +690,6 @@ app.post('/api/declare-subject', authMiddleware, async (req, res) => {
   }
 });
 
-// Get user progress
 app.get('/api/progress', authMiddleware, async (req, res) => {
   try {
     const stats = await pool.query(`
@@ -729,10 +707,10 @@ app.get('/api/progress', authMiddleware, async (req, res) => {
     );
 
     const lockProgress = {
-      days: Math.min(
+      days: req.user.subject_locked_at ? Math.min(
         Math.floor((Date.now() - new Date(req.user.subject_locked_at).getTime()) / (24 * 60 * 60 * 1000)),
         7
-      ),
+      ) : 0,
       sessions: req.user.session_count || 0,
       aars: req.user.aar_count || 0
     };
@@ -753,9 +731,13 @@ app.get('/api/progress', authMiddleware, async (req, res) => {
   }
 });
 
-// Get resources
+// OPTIMIZED: Use index for faster resource queries
 app.get('/api/resources', authMiddleware, async (req, res) => {
   try {
+    if (!req.user.primary_subject_id) {
+      return res.json({ resources: [] });
+    }
+    
     const result = await pool.query(
       `SELECT r.* FROM resources r
        WHERE r.subject_id = $1 AND r.is_active = true
@@ -769,7 +751,6 @@ app.get('/api/resources', authMiddleware, async (req, res) => {
   }
 });
 
-// Start session
 app.post('/api/sessions/start', authMiddleware, async (req, res) => {
   try {
     const { plannedDuration, sessionType } = req.body;
@@ -796,7 +777,6 @@ app.post('/api/sessions/start', authMiddleware, async (req, res) => {
   }
 });
 
-// Get active session
 app.get('/api/sessions/active', authMiddleware, async (req, res) => {
   try {
     const result = await pool.query(
@@ -811,7 +791,6 @@ app.get('/api/sessions/active', authMiddleware, async (req, res) => {
   }
 });
 
-// Complete session
 app.post('/api/sessions/:id/complete', authMiddleware, async (req, res) => {
   try {
     const sessionId = req.params.id;
@@ -849,7 +828,6 @@ app.post('/api/sessions/:id/complete', authMiddleware, async (req, res) => {
   }
 });
 
-// Submit AAR
 app.post('/api/aar/submit', authMiddleware, async (req, res) => {
   try {
     const { whatWorked, whatBlocked, tomorrowPlan } = req.body;
@@ -873,7 +851,6 @@ app.post('/api/aar/submit', authMiddleware, async (req, res) => {
   }
 });
 
-// Unlock request
 app.post('/api/unlock-request', authMiddleware, async (req, res) => {
   try {
     await pool.query(
@@ -888,19 +865,13 @@ app.post('/api/unlock-request', authMiddleware, async (req, res) => {
   }
 });
 
-// Email sending function
 async function sendEmail({ to, subject, html }) {
   if (!emailConfigured) {
     console.log('📧 Email not configured. Would send to:', to);
-    console.log('Subject:', subject);
     return;
   }
 
   try {
-    console.log('📧 Attempting to send email...');
-    console.log('📧 BREVO_API_KEY exists:', !!process.env.BREVO_API_KEY);
-    console.log('📧 RN exists:', !!process.env.RN);
-
     const response = await fetch('https://api.brevo.com/v3/smtp/email', {
       method: 'POST',
       headers: {
@@ -931,12 +902,8 @@ async function sendEmail({ to, subject, html }) {
   }
 }
 
-// Admin endpoints
 app.get('/api/admin/codes', authMiddleware, async (req, res) => {
-  if (!req.user.is_admin) {
-    return res.status(403).json({ error: 'Admin only' });
-  }
-
+  if (!req.user.is_admin) return res.status(403).json({ error: 'Admin only' });
   try {
     const result = await pool.query(`
       SELECT ac.*, u.email as used_by_email
@@ -946,47 +913,33 @@ app.get('/api/admin/codes', authMiddleware, async (req, res) => {
     `);
     res.json({ codes: result.rows });
   } catch (error) {
-    console.error('Admin codes error:', error);
     res.status(500).json({ error: 'Failed to fetch codes' });
   }
 });
 
 app.post('/api/admin/codes', authMiddleware, async (req, res) => {
-  if (!req.user.is_admin) {
-    return res.status(403).json({ error: 'Admin only' });
-  }
-
+  if (!req.user.is_admin) return res.status(403).json({ error: 'Admin only' });
   try {
     const { count = 1, prefix = 'CODE' } = req.body;
     const codes = [];
-
     for (let i = 0; i < count; i++) {
       const code = `${prefix}${Math.random().toString(36).substring(2, 9).toUpperCase()}`;
       await pool.query('INSERT INTO access_codes (code) VALUES ($1)', [code]);
       codes.push(code);
     }
-
     res.json({ codes });
   } catch (error) {
-    console.error('Generate codes error:', error);
     res.status(500).json({ error: 'Failed to generate codes' });
   }
 });
 
 app.post('/api/admin/codes/send', authMiddleware, async (req, res) => {
-  if (!req.user.is_admin) {
-    return res.status(403).json({ error: 'Admin only' });
-  }
-
+  if (!req.user.is_admin) return res.status(403).json({ error: 'Admin only' });
   try {
     const { email, prefix = 'CODE' } = req.body;
-
-    if (!email) {
-      return res.status(400).json({ error: 'Email required' });
-    }
+    if (!email) return res.status(400).json({ error: 'Email required' });
 
     const code = `${prefix}${Math.random().toString(36).substring(2, 9).toUpperCase()}`;
-    
     await pool.query(
       'INSERT INTO access_codes (code, sent_to_email, sent_at) VALUES ($1, $2, CURRENT_TIMESTAMP)',
       [code, email]
@@ -995,33 +948,28 @@ app.post('/api/admin/codes/send', authMiddleware, async (req, res) => {
     if (emailConfigured) {
       await sendEmail({
         to: email,
-        subject: 'Your RNPathfinders Access Code(s) 🎯',
+        subject: 'Your RNPathfinders Access Code 🎯',
         html: `
           <h2>Welcome to RNPathfinders!</h2>
           <p>Your access code is:</p>
           <h1 style="background:#f0f0f0;padding:20px;text-align:center;font-family:monospace;">${code}</h1>
           <p>Use this code to register at: <a href="${process.env.FRONTEND_URL}">${process.env.FRONTEND_URL}</a></p>
-          <p>This code is for single use only.</p>
         `
       });
     }
 
     res.json({ message: 'Code sent successfully', code });
   } catch (error) {
-    console.error('Send code error:', error);
     res.status(500).json({ error: 'Failed to send code' });
   }
 });
 
 app.get('/api/admin/users', authMiddleware, async (req, res) => {
-  if (!req.user.is_admin) {
-    return res.status(403).json({ error: 'Admin only' });
-  }
-
+  if (!req.user.is_admin) return res.status(403).json({ error: 'Admin only' });
   try {
     const result = await pool.query(`
       SELECT u.id, u.email, u.is_admin, u.session_count, u.aar_count,
-             s.code || ' - ' || s.name as primary_subject,
+             COALESCE(s.code || ' - ' || s.name, '') as primary_subject,
              u.unlock_requested
       FROM users u
       LEFT JOIN subjects s ON u.primary_subject_id = s.id
@@ -1029,62 +977,43 @@ app.get('/api/admin/users', authMiddleware, async (req, res) => {
     `);
     res.json({ users: result.rows });
   } catch (error) {
-    console.error('Admin users error:', error);
     res.status(500).json({ error: 'Failed to fetch users' });
   }
 });
 
 app.post('/api/admin/users/:id/unlock', authMiddleware, async (req, res) => {
-  if (!req.user.is_admin) {
-    return res.status(403).json({ error: 'Admin only' });
-  }
-
+  if (!req.user.is_admin) return res.status(403).json({ error: 'Admin only' });
   try {
     await pool.query(
-      `UPDATE users SET 
-        primary_subject_id = NULL,
-        subject_locked_at = NULL,
-        lock_expires_at = NULL,
-        onboarding_complete = FALSE,
-        unlock_requested = FALSE
-       WHERE id = $1`,
-      [req.params.id]
+      `UPDATE users SET primary_subject_id = NULL, subject_locked_at = NULL,
+       lock_expires_at = NULL, onboarding_complete = FALSE, unlock_requested = FALSE
+       WHERE id = $1`, [req.params.id]
     );
-
     res.json({ message: 'User unlocked successfully' });
   } catch (error) {
-    console.error('Unlock user error:', error);
     res.status(500).json({ error: 'Failed to unlock user' });
   }
 });
 
 app.delete('/api/admin/users/:id', authMiddleware, async (req, res) => {
-  if (!req.user.is_admin) {
-    return res.status(403).json({ error: 'Admin only' });
-  }
-
+  if (!req.user.is_admin) return res.status(403).json({ error: 'Admin only' });
   try {
     if (req.params.id === req.user.id.toString()) {
       return res.status(400).json({ error: 'Cannot delete yourself' });
     }
-
     await pool.query('DELETE FROM users WHERE id = $1', [req.params.id]);
     res.json({ message: 'User deleted successfully' });
   } catch (error) {
-    console.error('Delete user error:', error);
     res.status(500).json({ error: 'Failed to delete user' });
   }
 });
 
 app.get('/api/admin/unlock-requests', authMiddleware, async (req, res) => {
-  if (!req.user.is_admin) {
-    return res.status(403).json({ error: 'Admin only' });
-  }
-
+  if (!req.user.is_admin) return res.status(403).json({ error: 'Admin only' });
   try {
     const result = await pool.query(`
       SELECT u.id, u.email, u.session_count, u.aar_count, u.unlock_requested_at,
-             s.code || ' - ' || s.name as primary_subject,
+             COALESCE(s.code || ' - ' || s.name, '') as primary_subject,
              EXTRACT(DAY FROM (NOW() - u.subject_locked_at)) as days_locked
       FROM users u
       LEFT JOIN subjects s ON u.primary_subject_id = s.id
@@ -1093,58 +1022,36 @@ app.get('/api/admin/unlock-requests', authMiddleware, async (req, res) => {
     `);
     res.json({ requests: result.rows });
   } catch (error) {
-    console.error('Unlock requests error:', error);
     res.status(500).json({ error: 'Failed to fetch unlock requests' });
   }
 });
 
 app.post('/api/admin/users/:id/approve-unlock', authMiddleware, async (req, res) => {
-  if (!req.user.is_admin) {
-    return res.status(403).json({ error: 'Admin only' });
-  }
-
+  if (!req.user.is_admin) return res.status(403).json({ error: 'Admin only' });
   try {
     await pool.query(
-      `UPDATE users SET 
-        primary_subject_id = NULL,
-        subject_locked_at = NULL,
-        lock_expires_at = NULL,
-        onboarding_complete = FALSE,
-        unlock_requested = FALSE
-       WHERE id = $1`,
-      [req.params.id]
+      `UPDATE users SET primary_subject_id = NULL, subject_locked_at = NULL,
+       lock_expires_at = NULL, onboarding_complete = FALSE, unlock_requested = FALSE
+       WHERE id = $1`, [req.params.id]
     );
-
     res.json({ message: 'Unlock request approved' });
   } catch (error) {
-    console.error('Approve unlock error:', error);
     res.status(500).json({ error: 'Failed to approve unlock' });
   }
 });
 
 app.post('/api/admin/users/:id/deny-unlock', authMiddleware, async (req, res) => {
-  if (!req.user.is_admin) {
-    return res.status(403).json({ error: 'Admin only' });
-  }
-
+  if (!req.user.is_admin) return res.status(403).json({ error: 'Admin only' });
   try {
-    await pool.query(
-      'UPDATE users SET unlock_requested = FALSE WHERE id = $1',
-      [req.params.id]
-    );
-
+    await pool.query('UPDATE users SET unlock_requested = FALSE WHERE id = $1', [req.params.id]);
     res.json({ message: 'Unlock request denied' });
   } catch (error) {
-    console.error('Deny unlock error:', error);
     res.status(500).json({ error: 'Failed to deny unlock' });
   }
 });
 
 app.get('/api/admin/resources', authMiddleware, async (req, res) => {
-  if (!req.user.is_admin) {
-    return res.status(403).json({ error: 'Admin only' });
-  }
-
+  if (!req.user.is_admin) return res.status(403).json({ error: 'Admin only' });
   try {
     const result = await pool.query(`
       SELECT r.*, s.code as subject_code, s.name as subject_name
@@ -1154,76 +1061,57 @@ app.get('/api/admin/resources', authMiddleware, async (req, res) => {
     `);
     res.json({ resources: result.rows });
   } catch (error) {
-    console.error('Admin resources error:', error);
     res.status(500).json({ error: 'Failed to fetch resources' });
   }
 });
 
 app.post('/api/admin/resources', authMiddleware, async (req, res) => {
-  if (!req.user.is_admin) {
-    return res.status(403).json({ error: 'Admin only' });
-  }
-
+  if (!req.user.is_admin) return res.status(403).json({ error: 'Admin only' });
   try {
     const { subjectId, title, url, type } = req.body;
-
     await pool.query(
       'INSERT INTO resources (subject_id, title, url, type) VALUES ($1, $2, $3, $4)',
       [subjectId, title, url, type]
     );
-
     res.json({ message: 'Resource added successfully' });
   } catch (error) {
-    console.error('Add resource error:', error);
     res.status(500).json({ error: 'Failed to add resource' });
   }
 });
 
 app.delete('/api/admin/resources/:id', authMiddleware, async (req, res) => {
-  if (!req.user.is_admin) {
-    return res.status(403).json({ error: 'Admin only' });
-  }
-
+  if (!req.user.is_admin) return res.status(403).json({ error: 'Admin only' });
   try {
     await pool.query('DELETE FROM resources WHERE id = $1', [req.params.id]);
     res.json({ message: 'Resource deleted successfully' });
   } catch (error) {
-    console.error('Delete resource error:', error);
     res.status(500).json({ error: 'Failed to delete resource' });
   }
 });
 
 app.post('/api/admin/subjects', authMiddleware, async (req, res) => {
-  if (!req.user.is_admin) {
-    return res.status(403).json({ error: 'Admin only' });
-  }
-
+  if (!req.user.is_admin) return res.status(403).json({ error: 'Admin only' });
   try {
     const { departmentId, code, name } = req.body;
-
     await pool.query(
       'INSERT INTO subjects (department_id, code, name) VALUES ($1, $2, $3)',
       [departmentId, code, name]
     );
-
     res.json({ message: 'Subject added successfully' });
   } catch (error) {
-    console.error('Add subject error:', error);
     res.status(500).json({ error: 'Failed to add subject' });
   }
 });
 
-// Health check
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
     message: 'RNPathfinders API is running',
-    version: '3.0.1',
+    version: '3.0.3-optimized',
     domain: 'rnpathfinders.ng'
   });
 });
 
-// Test database
 app.get('/api/test-db', async (req, res) => {
   try {
     const result = await pool.query('SELECT NOW()');
@@ -1241,18 +1129,17 @@ app.get('/api/test-db', async (req, res) => {
   }
 });
 
-// Initialize database and start server
 const PORT = process.env.PORT || 5000;
 
 initializeDatabase()
   .then(() => {
     app.listen(PORT, '0.0.0.0', () => {
-      console.log(`✅ RNPathfinders API v3.0.1 running on port ${PORT}`);
-      console.log(`📧 Email: ${emailConfigured ? 'Configured' : 'Not configured (logging only)'}`);
-      console.log(`🔐 Features: Password Reset, Email Codes, User Unlock Requests`);
+      console.log(`✅ RNPathfinders API v3.0.3 (OPTIMIZED) running on port ${PORT}`);
+      console.log(`📧 Email: ${emailConfigured ? 'Configured' : 'Not configured'}`);
+      console.log(`📚 130 subjects across 5 departments`);
     });
   })
   .catch(error => {
-    console.error('❌ Failed to initialize database:', error);
+    console.error('❌ Failed to initialize:', error);
     process.exit(1);
   });
