@@ -492,10 +492,10 @@ app.get('/api/auth/me', authMiddleware, async (req, res) => {
     const result = await pool.query(`
       SELECT 
         u.*,
-        s.name as primary_subject_name,
-        s.code as primary_subject_code,
-        d.name as department_name,
-        d.icon as department_icon
+        COALESCE(s.name, '') as primary_subject_name,
+        COALESCE(s.code, '') as primary_subject_code,
+        COALESCE(d.name, '') as department_name,
+        COALESCE(d.icon, '📚') as department_icon
       FROM users u
       LEFT JOIN subjects s ON u.primary_subject_id = s.id
       LEFT JOIN departments d ON s.department_id = d.id
