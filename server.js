@@ -12,9 +12,21 @@ app.use(express.json());
 app.use(cors({ origin: process.env.FRONTEND_URL || '*', credentials: true }));
 
 // ✅ FIX #1: Better connection pool (prevents "load failed")
-const pool = new Pool({ 
+
+  const pool = new Pool({ 
   connectionString: process.env.DATABASE_URL, 
   ssl: { rejectUnauthorized: false },
+  max: 20,
+  min: 5,  // ← THIS FIXES "LOAD FAILED"
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 10000,
+  keepAlive: true,
+  keepAliveInitialDelayMillis: 10000
+});
+
+pool.on('error', (err) => {
+  console.error('❌ Database pool error:', err);
+});
   max: 20,
   min: 5,  // Keep 5 connections ready
   idleTimeoutMillis: 30000,
