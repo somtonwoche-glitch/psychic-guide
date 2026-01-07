@@ -11,7 +11,20 @@ const app = express();
 app.use(express.json());
 app.use(cors({ origin: process.env.FRONTEND_URL || '*', credentials: true }));
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
+const pool = new Pool({ 
+  connectionString: process.env.DATABASE_URL, 
+  ssl: { rejectUnauthorized: false },
+  max: 20,
+  min: 5,  // ← THIS FIXES "LOAD FAILED"
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 10000,
+  keepAlive: true,
+  keepAliveInitialDelayMillis: 10000
+});
+
+pool.on('error', (err) => {
+  console.error('❌ Database pool error:', err);
+});
 
 // Email setup using Brevo HTTP API (no SMTP needed)
 async function sendEmail(to, subject, html) {
